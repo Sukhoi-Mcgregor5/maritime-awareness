@@ -102,6 +102,7 @@
 <header>
   <h1>⚓ Maritime Domain Awareness</h1>
   <span class="badge" id="vessel-count">— vessels</span>
+  <span class="badge" id="anomaly-count" style="background:#4a1a1a;color:#f87171">— anomalies</span>
   <span class="status">Updated <span id="last-updated">—</span></span>
 </header>
 
@@ -109,10 +110,17 @@
   <aside>
     <div class="sidebar-header">Vessels</div>
     <div class="vessel-list" id="vessel-list"></div>
+    <div id="anomaly-section" style="display:none">
+      <div class="sidebar-header" style="color:#f87171;border-color:#4a1a1a">⚠ Anomalies</div>
+      <div class="vessel-list" id="anomaly-list"></div>
+    </div>
     <div class="legend">
       <div class="legend-title">Vessel type</div>
-      <!-- populated by JS -->
       <div id="legend-items"></div>
+      <div class="legend-item" style="margin-top:6px;padding-top:6px;border-top:1px solid #1e3a5f">
+        <div class="legend-dot" style="background:#ef4444;outline:2px solid #7f1d1d"></div>
+        <span style="color:#f87171">Anomaly</span>
+      </div>
     </div>
   </aside>
   <div id="map"></div>
@@ -155,9 +163,11 @@ L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let markers   = {};   // mmsi → L.Marker
-let vessels   = [];   // current vessel list
-let selected  = null; // selected mmsi
+let markers        = {};   // mmsi → L.Marker
+let anomalyMarkers = {};   // anomaly.id → L.CircleMarker
+let vessels        = [];   // current vessel list
+let anomalies      = [];   // current active anomaly list
+let selected       = null; // selected mmsi
 
 // ---------------------------------------------------------------------------
 // Marker helpers
@@ -196,6 +206,83 @@ function popupHtml(v) {
     <div class="popup-row"><span class="popup-label">Reported</span><span class="popup-val">${ts}</span></div>
     <button class="popup-track-btn" onclick="fetchTrack('${v.mmsi}')">View track history</button>
   `;
+}
+
+// ---------------------------------------------------------------------------
+// Anomaly markers
+// ---------------------------------------------------------------------------
+function anomalyPopupHtml(a) {
+  const d    = a.details || {};
+  const type = a.anomaly_type.replace(/_/g, ' ');
+  let extra  = '';
+  if (a.anomaly_type === 'dark_vessel')
+    extra = `<div class="popup-row"><span class="popup-label">Silent for</span><span class="popup-val">${d.silence_minutes ?? '—'} min</span></div>`;
+  else if (a.anomaly_type === 'loitering')
+    extra = `<div class="popup-row"><span class="popup-label">Displacement</span><span class="popup-val">${d.displacement_nm ?? '—'} nm</span></div>
+             <div class="popup-row"><span class="popup-label">Avg SOG</span><span class="popup-val">${d.avg_sog_knots ?? '—'} kn</span></div>`;
+  return `
+    <div class="popup-name" style="color:#f87171">⚠ ${type.toUpperCase()}</div>
+    <div class="popup-row"><span class="popup-label">MMSI</span><span class="popup-val">${a.mmsi}</span></div>
+    <div class="popup-row"><span class="popup-label">Vessel</span><span class="popup-val">${d.vessel_name || '—'}</span></div>
+    <div class="popup-row"><span class="popup-label">Detected</span><span class="popup-val">${new Date(a.detected_at).toUTCString()}</span></div>
+    ${extra}`;
+}
+
+function renderAnomalySidebar(list) {
+  const section = document.getElementById('anomaly-section');
+  const el      = document.getElementById('anomaly-list');
+  section.style.display = list.length ? '' : 'none';
+  el.innerHTML = '';
+  list.forEach(a => {
+    const d    = a.details || {};
+    const type = a.anomaly_type.replace(/_/g, ' ');
+    const item = document.createElement('div');
+    item.className = 'vessel-item';
+    item.innerHTML = `
+      <div class="vessel-dot" style="background:#ef4444"></div>
+      <div class="vessel-info">
+        <div class="vessel-name" style="color:#f87171">${d.vessel_name || a.mmsi}</div>
+        <div class="vessel-sub">${type} · ${a.mmsi}</div>
+      </div>`;
+    item.addEventListener('click', () => {
+      const m = anomalyMarkers[a.id];
+      if (m) { map.setView(m.getLatLng(), Math.max(map.getZoom(), 8)); m.openPopup(); }
+    });
+    el.appendChild(item);
+  });
+}
+
+async function loadAnomalies() {
+  const res = await fetch(`${API_BASE}/anomalies/active`);
+  if (!res.ok) return;
+  anomalies = await res.json();
+
+  const seen = new Set();
+  for (const a of anomalies) {
+    const d   = a.details || {};
+    const lat = d.last_lat ?? d.first_lat;
+    const lon = d.last_lon ?? d.first_lon;
+    if (lat == null || lon == null) continue;
+    seen.add(a.id);
+
+    if (anomalyMarkers[a.id]) {
+      anomalyMarkers[a.id].setLatLng([lat, lon]);
+      anomalyMarkers[a.id]._popup.setContent(anomalyPopupHtml(a));
+    } else {
+      anomalyMarkers[a.id] = L.circleMarker([lat, lon], {
+        radius: 10, color: '#7f1d1d', fillColor: '#ef4444',
+        fillOpacity: 0.85, weight: 2,
+      }).bindPopup(anomalyPopupHtml(a), { maxWidth: 260 }).addTo(map);
+    }
+  }
+
+  for (const id of Object.keys(anomalyMarkers)) {
+    if (!seen.has(Number(id))) { map.removeLayer(anomalyMarkers[id]); delete anomalyMarkers[id]; }
+  }
+
+  document.getElementById('anomaly-count').textContent =
+    anomalies.length ? `${anomalies.length} anomalies` : '0 anomalies';
+  renderAnomalySidebar(anomalies);
 }
 
 // ---------------------------------------------------------------------------
@@ -329,9 +416,13 @@ async function loadVessels() {
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
+async function refresh() {
+  await Promise.all([loadVessels(), loadAnomalies()]);
+}
+
 renderLegend();
-loadVessels();
-setInterval(loadVessels, REFRESH_MS);
+refresh();
+setInterval(refresh, REFRESH_MS);
 </script>
 </body>
 </html>

@@ -22,12 +22,12 @@ class Settings(BaseSettings):
     detection_interval_seconds: int = 300   # run detectors every 5 minutes
 
     # Dark vessel thresholds
-    dark_vessel_silence_minutes: int   = 120   # silent for this long → dark
+    dark_vessel_silence_minutes: int   = 10    # silent for this long → dark
     dark_vessel_lookback_hours:  int   = 24    # only flag if seen within this window
 
     # Loitering thresholds
-    loitering_window_hours:          float = 3.0
-    loitering_min_duration_minutes:  float = 60.0
+    loitering_window_hours:          float = 1.0
+    loitering_min_duration_minutes:  float = 15.0
     loitering_max_displacement_nm:   float = 2.0
     loitering_max_avg_sog:           float = 1.5
 
