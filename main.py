@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -7,13 +9,26 @@ from api.router import router
 from api.vessels import router as vessels_router
 from config import settings
 from database import Base, engine
+from ingestion.poller import run_poller
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    poller_task = asyncio.create_task(run_poller())
+
     yield
+
+    poller_task.cancel()
+    try:
+        await poller_task
+    except asyncio.CancelledError:
+        logger.info("AIS poller stopped")
+
     await engine.dispose()
 
 
