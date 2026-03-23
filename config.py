@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     debug: bool = False
+    sql_echo: bool = False
 
     # AISStream — register free at https://aisstream.io
     aisstream_api_key: str = ""
