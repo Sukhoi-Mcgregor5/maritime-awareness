@@ -3,11 +3,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from ontology.models import NavigationStatus, Vessel, VesselType
+from ontology.models import NavigationStatus, Vessel, VesselTrack, VesselType
 
 router = APIRouter(prefix="/vessels", tags=["vessels"])
 
@@ -76,6 +76,29 @@ class VesselPage(BaseModel):
     items: list[VesselResponse]
 
 
+class TrackPointResponse(BaseModel):
+    id: int
+    mmsi: str
+    latitude: float
+    longitude: float
+    speed_over_ground: float | None
+    course_over_ground: float | None
+    heading: float | None
+    nav_status: NavigationStatus
+    recorded_at: datetime
+    ingested_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TrackResponse(BaseModel):
+    mmsi: str
+    since: datetime
+    until: datetime
+    count: int
+    points: list[TrackPointResponse]
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -136,3 +159,69 @@ async def update_vessel_position(mmsi: str, payload: PositionUpdate, db: Db):
     await db.flush()
     await db.refresh(vessel)
     return vessel
+
+
+@router.get("/{mmsi}/track", response_model=TrackResponse)
+async def get_vessel_track(
+    mmsi: str,
+    db: Db,
+    since: Annotated[datetime | None, Query(description="Start of time window (inclusive)")] = None,
+    until: Annotated[datetime | None, Query(description="End of time window (inclusive)")] = None,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 500,
+):
+    vessel_exists = (
+        await db.execute(select(Vessel.mmsi).where(Vessel.mmsi == mmsi))
+    ).scalar_one_or_none()
+    if vessel_exists is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Vessel {mmsi} not found")
+
+    now = datetime.utcnow()
+    since = since or datetime.min.replace(year=1970)
+    until = until or now
+
+    if since >= until:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="'since' must be before 'until'")
+
+    query = (
+        select(VesselTrack)
+        .where(VesselTrack.mmsi == mmsi)
+        .where(VesselTrack.recorded_at >= since)
+        .where(VesselTrack.recorded_at <= until)
+        .order_by(VesselTrack.recorded_at)
+        .limit(limit)
+    )
+    points = (await db.execute(query)).scalars().all()
+
+    count_result = await db.execute(
+        select(func.count())
+        .select_from(VesselTrack)
+        .where(VesselTrack.mmsi == mmsi)
+        .where(VesselTrack.recorded_at >= since)
+        .where(VesselTrack.recorded_at <= until)
+    )
+    total = count_result.scalar_one()
+
+    return TrackResponse(mmsi=mmsi, since=since, until=until, count=total, points=points)
+
+
+@router.get("/{mmsi}/track/latest", response_model=TrackPointResponse)
+async def get_latest_track_point(mmsi: str, db: Db):
+    vessel_exists = (
+        await db.execute(select(Vessel.mmsi).where(Vessel.mmsi == mmsi))
+    ).scalar_one_or_none()
+    if vessel_exists is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Vessel {mmsi} not found")
+
+    point = (
+        await db.execute(
+            select(VesselTrack)
+            .where(VesselTrack.mmsi == mmsi)
+            .order_by(VesselTrack.recorded_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if point is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No track data for vessel {mmsi}")
+
+    return point
