@@ -55,6 +55,11 @@ async def root():
     return RedirectResponse(url="/static/index.html")
 
 
+@app.get("/map", include_in_schema=False)
+async def map_view():
+    return RedirectResponse(url="/static/map.html")
+
+
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
 

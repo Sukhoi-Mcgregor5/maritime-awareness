@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Maritime Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+    #map { height: 100%; }
+
+    .info-box {
+      position: absolute;
+      top: 12px; left: 56px;
+      z-index: 1000;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 13px;
+      line-height: 1.6;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      min-width: 160px;
+    }
+    .info-box strong { display: block; font-size: 14px; margin-bottom: 2px; }
+    .info-box .meta { color: #555; font-size: 11px; }
+    .info-box .count { font-size: 22px; font-weight: 700; color: #1a6fc4; }
+    .info-box .anomaly-count { font-size: 22px; font-weight: 700; color: #c0392b; }
+
+    .legend {
+      position: absolute;
+      bottom: 28px; right: 10px;
+      z-index: 1000;
+      background: rgba(255,255,255,0.92);
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    }
+    .legend strong { display: block; margin-bottom: 5px; font-size: 12px; color: #333; }
+    .legend-row { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+    .dot {
+      width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+      border: 2px solid rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+<body>
+
+<div class="info-box" id="info-box">
+  <strong>Maritime Domain Awareness</strong>
+  <div>
+    <span class="count" id="vessel-count">—</span>
+    <span style="font-size:12px;color:#555"> vessels</span>
+    &nbsp;
+    <span class="anomaly-count" id="anomaly-count">—</span>
+    <span style="font-size:12px;color:#555"> anomalies</span>
+  </div>
+  <div class="meta">Updated: <span id="last-updated">—</span></div>
+</div>
+
+<div class="legend">
+  <strong>Legend</strong>
+  <div class="legend-row"><div class="dot" style="background:#2980b9"></div> Vessel</div>
+  <div class="legend-row"><div class="dot" style="background:#e74c3c"></div> Active anomaly</div>
+</div>
+
+<div id="map"></div>
+
+<script>
+const REFRESH_MS = 30_000;
+const API = '/api/v1';
+
+// ── Map ──────────────────────────────────────────────────────────────────────
+const map = L.map('map').setView([20, 0], 3);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  maxZoom: 19,
+}).addTo(map);
+
+// ── Layer groups (cleared and repopulated on each refresh) ───────────────────
+const vesselLayer  = L.layerGroup().addTo(map);
+const anomalyLayer = L.layerGroup().addTo(map);
+
+L.control.layers(null, {
+  'Vessels':   vesselLayer,
+  'Anomalies': anomalyLayer,
+}).addTo(map);
+
+// ── Marker styles ────────────────────────────────────────────────────────────
+const VESSEL_STYLE = {
+  radius: 5, color: '#1a5f9e', fillColor: '#2980b9',
+  fillOpacity: 0.8, weight: 1.5,
+};
+
+const ANOMALY_STYLE = {
+  radius: 9, color: '#922b21', fillColor: '#e74c3c',
+  fillOpacity: 0.85, weight: 2,
+};
+
+// ── Popup helpers ─────────────────────────────────────────────────────────────
+function vesselPopup(v) {
+  const rows = [
+    ['MMSI',    v.mmsi],
+    ['Name',    v.name || '—'],
+    ['Type',    v.vessel_type],
+    ['Flag',    v.flag || '—'],
+    ['SOG',     v.speed_over_ground != null ? v.speed_over_ground.toFixed(1) + ' kn' : '—'],
+    ['Status',  (v.nav_status || '').replace(/_/g, ' ')],
+    ['Reported', v.position_timestamp ? new Date(v.position_timestamp).toUTCString() : '—'],
+  ];
+  return '<b>' + (v.name || v.mmsi) + '</b><br>' +
+    rows.map(([k, val]) => `<span style="color:#666">${k}:</span> ${val}`).join('<br>');
+}
+
+function anomalyPopup(a) {
+  const d = a.details || {};
+  const typeLabel = a.anomaly_type.replace(/_/g, ' ');
+  let extra = '';
+  if (a.anomaly_type === 'dark_vessel') {
+    extra = `Silence: ${d.silence_minutes ?? '—'} min`;
+  } else if (a.anomaly_type === 'loitering') {
+    extra = `Displacement: ${d.displacement_nm ?? '—'} nm · Avg SOG: ${d.avg_sog_knots ?? '—'} kn`;
+  }
+  return `<b style="color:#c0392b">⚠ ${typeLabel.toUpperCase()}</b><br>` +
+    `<span style="color:#666">MMSI:</span> ${a.mmsi}<br>` +
+    `<span style="color:#666">Vessel:</span> ${d.vessel_name || '—'}<br>` +
+    `<span style="color:#666">Since:</span> ${new Date(a.detected_at).toUTCString()}<br>` +
+    extra;
+}
+
+// ── Fetch and render ──────────────────────────────────────────────────────────
+async function refresh() {
+  const [vesselRes, anomalyRes] = await Promise.all([
+    fetch(`${API}/vessels?limit=200`),
+    fetch(`${API}/anomalies/active`),
+  ]);
+
+  const [vesselData, anomalies] = await Promise.all([
+    vesselRes.json(),
+    anomalyRes.json(),
+  ]);
+
+  const vessels = vesselData.items ?? [];
+
+  // Index anomaly positions by MMSI for quick lookup
+  const anomalyByMmsi = {};
+  for (const a of anomalies) {
+    anomalyByMmsi[a.mmsi] = a;
+  }
+
+  vesselLayer.clearLayers();
+  anomalyLayer.clearLayers();
+
+  let plotted = 0;
+  for (const v of vessels) {
+    if (v.latitude == null || v.longitude == null) continue;
+    L.circleMarker([v.latitude, v.longitude], VESSEL_STYLE)
+      .bindPopup(vesselPopup(v))
+      .addTo(vesselLayer);
+    plotted++;
+  }
+
+  for (const a of anomalies) {
+    const d = a.details || {};
+    const lat = d.last_lat ?? d.first_lat;
+    const lon = d.last_lon ?? d.first_lon;
+    if (lat == null || lon == null) continue;
+    L.circleMarker([lat, lon], ANOMALY_STYLE)
+      .bindPopup(anomalyPopup(a))
+      .addTo(anomalyLayer);
+  }
+
+  document.getElementById('vessel-count').textContent  = plotted;
+  document.getElementById('anomaly-count').textContent = anomalies.length;
+  document.getElementById('last-updated').textContent  = new Date().toLocaleTimeString();
+}
+
+refresh().catch(console.error);
+setInterval(() => refresh().catch(console.error), REFRESH_MS);
+</script>
+</body>
+</html>
