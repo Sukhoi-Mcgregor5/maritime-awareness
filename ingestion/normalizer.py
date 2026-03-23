@@ -1,6 +1,10 @@
 """
-Convert raw AISHub vessel records into dicts suitable for upserting into
-the Vessel table.  All field names match Vessel column names exactly.
+Convert raw AISStream.io messages into dicts suitable for upserting into
+the Vessel and VesselTrack tables.
+
+AISStream delivers two relevant message types:
+  - PositionReport   (AIS msg 1/2/3): real-time lat/lon, SOG, COG, heading
+  - ShipStaticData   (AIS msg 5):     name, call sign, IMO, type, dimensions
 """
 
 from datetime import datetime, timezone
@@ -8,8 +12,7 @@ from datetime import datetime, timezone
 from ontology.models import NavigationStatus, VesselType
 
 # ---------------------------------------------------------------------------
-# AIS vessel type code → VesselType
-# Reference: ITU-R M.1371-5, Table 53
+# AIS vessel type code → VesselType  (ITU-R M.1371-5, Table 53)
 # ---------------------------------------------------------------------------
 
 def _vessel_type(code: int | None) -> VesselType:
@@ -35,17 +38,16 @@ def _vessel_type(code: int | None) -> VesselType:
 
 
 # ---------------------------------------------------------------------------
-# AIS navigation status code → NavigationStatus
-# Reference: ITU-R M.1371-5, Table 45
+# AIS navigation status code → NavigationStatus  (ITU-R M.1371-5, Table 45)
 # ---------------------------------------------------------------------------
 
 _NAV_STATUS_MAP: dict[int, NavigationStatus] = {
-    0: NavigationStatus.under_way_engine,
-    1: NavigationStatus.at_anchor,
-    2: NavigationStatus.not_under_command,
-    3: NavigationStatus.restricted_maneuverability,
-    5: NavigationStatus.moored,
-    6: NavigationStatus.aground,
+    0:  NavigationStatus.under_way_engine,
+    1:  NavigationStatus.at_anchor,
+    2:  NavigationStatus.not_under_command,
+    3:  NavigationStatus.restricted_maneuverability,
+    5:  NavigationStatus.moored,
+    6:  NavigationStatus.aground,
     15: NavigationStatus.unknown,
 }
 
@@ -57,67 +59,103 @@ def _nav_status(code: int | None) -> NavigationStatus:
 
 
 # ---------------------------------------------------------------------------
-# Timestamp helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
+def _sentinel_to_none(value: float | int | None, sentinel: float) -> float | None:
+    """Replace AIS sentinel values with None."""
+    if value is None or value == sentinel:
+        return None
+    return float(value)
+
+
 def _parse_timestamp(raw: str | None) -> datetime | None:
-    """Parse AISHub time string 'YYYY-MM-DD HH:MM:SS' to aware UTC datetime."""
+    """Parse AISStream ISO 8601 timestamp to an aware UTC datetime."""
     if not raw:
         return None
     try:
-        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except ValueError:
         return None
 
 
-def _sentinel_to_none(value: float | int | None, sentinel) -> float | None:
-    """AISHub uses magic numbers (511, 102.3, etc.) to signal 'not available'."""
-    if value is None or value == sentinel:
-        return None
-    return float(value)
+def _mmsi(meta: dict, body: dict) -> str | None:
+    raw = meta.get("MMSI") or body.get("UserID")
+    mmsi = str(raw).strip() if raw is not None else ""
+    return mmsi if len(mmsi) == 9 and mmsi.isdigit() else None
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def normalize(raw: dict) -> dict:
+def normalize_position(msg: dict) -> dict | None:
     """
-    Convert one raw AISHub vessel record to a flat dict of Vessel column values.
+    Normalise a PositionReport message.
 
-    Only position/identity fields that AISHub provides are mapped; physical
-    dimensions (length, beam, draught, gross_tonnage) are not in the AISHub
-    feed and are left as None so existing DB values are preserved on upsert.
+    Returns a flat dict of Vessel column values suitable for upsert, or None
+    if the message is missing an MMSI.  The dict also carries 'position_timestamp'
+    which the poller uses to build a VesselTrack row.
     """
-    mmsi = str(raw.get("MMSI", "")).strip()
+    meta = msg.get("MetaData", {})
+    body = msg.get("Message", {}).get("PositionReport", {})
+
+    mmsi = _mmsi(meta, body)
     if not mmsi:
-        return {}
+        return None
 
-    imo_raw = raw.get("IMO")
-    imo = str(imo_raw) if imo_raw and int(imo_raw) > 0 else None
-
-    sog = _sentinel_to_none(raw.get("SOG"), 102.3)   # 102.3 = not available
-    cog = _sentinel_to_none(raw.get("COG"), 360.0)   # 360   = not available
-    heading = _sentinel_to_none(raw.get("HEADING"), 511)  # 511 = not available
-
-    lat = raw.get("LATITUDE")
-    lon = raw.get("LONGITUDE")
-    # Discard records with clearly invalid positions
+    # Prefer MetaData coordinates (already decoded); fall back to body
+    lat = meta.get("latitude") if meta.get("latitude") is not None else body.get("Latitude")
+    lon = meta.get("longitude") if meta.get("longitude") is not None else body.get("Longitude")
     if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
         lat = lon = None
 
     return {
-        "mmsi": mmsi,
-        "imo": imo,
-        "name": (raw.get("NAME") or "").strip() or None,
-        "call_sign": (raw.get("CALLSIGN") or "").strip() or None,
-        "flag": None,  # not provided by AISHub free feed
-        "vessel_type": _vessel_type(raw.get("TYPE")),
-        "latitude": float(lat) if lat is not None else None,
-        "longitude": float(lon) if lon is not None else None,
-        "speed_over_ground": sog,
-        "course_over_ground": cog,
-        "heading": heading,
-        "nav_status": _nav_status(raw.get("NAVSTAT")),
-        "position_timestamp": _parse_timestamp(raw.get("TIME")),
+        "mmsi":               mmsi,
+        "name":               (meta.get("ShipName") or "").strip() or None,
+        "vessel_type":        VesselType.unknown,  # not in position reports
+        "latitude":           float(lat) if lat is not None else None,
+        "longitude":          float(lon) if lon is not None else None,
+        "speed_over_ground":  _sentinel_to_none(body.get("Sog"), 102.3),
+        "course_over_ground": _sentinel_to_none(body.get("Cog"), 360.0),
+        "heading":            _sentinel_to_none(body.get("TrueHeading"), 511),
+        "nav_status":         _nav_status(body.get("NavigationalStatus")),
+        "position_timestamp": _parse_timestamp(meta.get("time_utc")),
+    }
+
+
+def normalize_static(msg: dict) -> dict | None:
+    """
+    Normalise a ShipStaticData message.
+
+    Returns a flat dict of Vessel column values.  Position fields are omitted
+    so the upsert never overwrites a more recent position with stale static data.
+    """
+    meta = msg.get("MetaData", {})
+    body = msg.get("Message", {}).get("ShipStaticData", {})
+
+    mmsi = _mmsi(meta, body)
+    if not mmsi:
+        return None
+
+    imo_raw = body.get("ImoNumber")
+    imo = str(int(imo_raw)) if imo_raw and int(imo_raw) > 0 else None
+
+    dim    = body.get("Dimension") or {}
+    length = (dim.get("A") or 0) + (dim.get("B") or 0) or None
+    beam   = (dim.get("C") or 0) + (dim.get("D") or 0) or None
+    draught = body.get("Draught") or None
+
+    return {
+        "mmsi":         mmsi,
+        "imo":          imo,
+        "name":         (body.get("Name") or meta.get("ShipName") or "").strip() or None,
+        "call_sign":    (body.get("CallSign") or "").strip() or None,
+        "vessel_type":  _vessel_type(body.get("Type")),
+        "length":       float(length) if length else None,
+        "beam":         float(beam) if beam else None,
+        "draught":      float(draught) if draught else None,
     }

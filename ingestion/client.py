@@ -1,89 +1,108 @@
 """
-AISHub HTTP client.
+AISStream.io WebSocket client.
 
-AISHub distributes aggregated AIS data in exchange for sharing your own
-receiver feed. Register at https://www.aishub.net/join-us to get a username.
+Connects to wss://stream.aisstream.io/v0/stream and yields real-time AIS
+messages as dicts.  Handles reconnection with exponential backoff so callers
+(the poller) can treat it as a continuous, never-ending async generator.
 
-API docs: http://www.aishub.net/api
+Register for a free API key at https://aisstream.io
 """
 
+import asyncio
+import json
 import logging
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator
 
-import httpx
+import websockets
+import websockets.exceptions
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-# AISHub returns a nested list: index 0 is metadata, index 1 is vessel records.
-_META_INDEX = 0
-_DATA_INDEX = 1
+# BoundingBox: [[lat_min, lon_min], [lat_max, lon_max]]
+# Pass a list of these to restrict the feed to specific sea areas.
+WORLD = [[[-90, -180], [90, 180]]]
+
+_RECONNECT_BASE = 1    # seconds before first reconnect attempt
+_RECONNECT_MAX  = 60   # cap on backoff
 
 
-@dataclass
-class BoundingBox:
-    lat_min: float
-    lat_max: float
-    lon_min: float
-    lon_max: float
-
-
-class AISHubError(Exception):
+class AISStreamError(Exception):
     pass
 
 
-class AISHubClient:
-    """Async client for the AISHub REST API."""
+class AISStreamClient:
+    """
+    Async WebSocket client for AISStream.io.
 
-    def __init__(self, username: str | None = None, timeout: float = 30.0):
-        self._username = username or settings.aishub_username
-        self._base_url = settings.aishub_url
-        self._timeout = timeout
+    Usage::
 
-    async def fetch_vessels(self, bbox: BoundingBox | None = None) -> list[dict]:
+        client = AISStreamClient()
+        async for msg in client.stream():
+            print(msg["MessageType"], msg["MetaData"]["MMSI"])
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        bounding_boxes: list[list[list[float]]] | None = None,
+        message_types: list[str] | None = None,
+    ):
+        self._api_key       = api_key or settings.aisstream_api_key
+        self._url           = settings.aisstream_url
+        self._bounding_boxes = bounding_boxes or WORLD
+        self._message_types  = message_types or ["PositionReport", "ShipStaticData"]
+
+    def _subscribe(self) -> str:
+        return json.dumps({
+            "APIKey":           self._api_key,
+            "BoundingBoxes":    self._bounding_boxes,
+            "FilterMessageTypes": self._message_types,
+        })
+
+    async def stream(self) -> AsyncGenerator[dict, None]:
         """
-        Fetch the latest vessel positions from AISHub.
+        Yield AIS message dicts indefinitely, reconnecting on any disconnect.
 
-        Returns a list of raw vessel dicts as provided by the API.
-        Pass a BoundingBox to restrict the geographic area; omit it for
-        a global snapshot (large payload, use sparingly).
+        Each yielded dict has the shape::
+
+            {
+              "MessageType": "PositionReport" | "ShipStaticData" | ...,
+              "Message":     { ... },       # payload keyed by MessageType
+              "MetaData":    { "MMSI": int, "ShipName": str,
+                               "latitude": float, "longitude": float,
+                               "time_utc": str, ... }
+            }
         """
-        if not self._username:
-            raise AISHubError(
-                "AISHUB_USERNAME is not set. "
-                "Register at https://www.aishub.net/join-us and add it to .env"
+        if not self._api_key:
+            raise AISStreamError(
+                "AISSTREAM_API_KEY is not set. "
+                "Register at https://aisstream.io and add it to .env"
             )
 
-        params: dict[str, str | int | float] = {
-            "username": self._username,
-            "format": 1,       # JSON
-            "output": "extended",
-            "compress": 0,
-        }
-        if bbox:
-            params.update({
-                "latmin": bbox.lat_min,
-                "latmax": bbox.lat_max,
-                "lonmin": bbox.lon_min,
-                "lonmax": bbox.lon_max,
-            })
+        backoff = _RECONNECT_BASE
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.get(self._base_url, params=params)
+        while True:
+            try:
+                async with websockets.connect(self._url) as ws:
+                    await ws.send(self._subscribe())
+                    logger.info("AISStream connected — subscribed to %s", self._message_types)
+                    backoff = _RECONNECT_BASE  # reset on successful connection
 
-        response.raise_for_status()
-        payload = response.json()
+                    async for raw in ws:
+                        try:
+                            yield json.loads(raw)
+                        except json.JSONDecodeError:
+                            logger.warning("Unparseable AISStream frame: %.120s", raw)
 
-        if not isinstance(payload, list) or len(payload) < 2:
-            raise AISHubError(f"Unexpected AISHub response structure: {payload}")
+            except websockets.exceptions.ConnectionClosed as exc:
+                logger.warning("AISStream connection closed: %s — reconnecting in %ds", exc, backoff)
+            except OSError as exc:
+                logger.warning("AISStream network error: %s — reconnecting in %ds", exc, backoff)
+            except asyncio.CancelledError:
+                logger.info("AISStream client cancelled")
+                return
 
-        meta = payload[_META_INDEX]
-        if isinstance(meta, list) and meta:
-            meta = meta[0]
-        if meta.get("ERROR"):
-            raise AISHubError(f"AISHub API error: {meta}")
-
-        vessels = payload[_DATA_INDEX]
-        logger.info("AISHub returned %d vessel records", len(vessels))
-        return vessels
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, _RECONNECT_MAX)

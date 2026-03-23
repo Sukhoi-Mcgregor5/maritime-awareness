@@ -7,12 +7,15 @@ class Settings(BaseSettings):
     api_port: int = 8000
     debug: bool = False
 
-    # AISHub — register free at https://www.aishub.net/join-us
-    aishub_username: str = ""
-    aishub_url: str = "http://data.aishub.net/ws.php"
+    # AISStream — register free at https://aisstream.io
+    aisstream_api_key: str = ""
+    aisstream_url: str = "wss://stream.aisstream.io/v0/stream"
 
-    # Polling interval in seconds
-    ais_poll_interval: int = 60
+    # Seconds between DB flush cycles while messages are accumulating
+    ais_batch_interval: int = 5
+
+    # Max records to buffer before forcing an early flush
+    ais_batch_max: int = 500
 
     class Config:
         env_file = ".env"
