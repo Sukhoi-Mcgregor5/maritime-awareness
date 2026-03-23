@@ -15,7 +15,7 @@ from config import settings
 from database import AsyncSessionLocal
 from ingestion.client import AISHubClient, AISHubError, BoundingBox
 from ingestion.normalizer import normalize
-from ontology.models import Vessel
+from ontology.models import Vessel, VesselTrack
 
 logger = logging.getLogger(__name__)
 
@@ -24,39 +24,83 @@ logger = logging.getLogger(__name__)
 DEFAULT_BBOX = BoundingBox(lat_min=-90, lat_max=90, lon_min=-180, lon_max=180)
 
 
+_VESSEL_UPDATE_FIELDS = (
+    "imo", "name", "call_sign", "flag", "vessel_type",
+    "latitude", "longitude",
+    "speed_over_ground", "course_over_ground", "heading",
+    "nav_status", "position_timestamp",
+)
+
+_TRACK_FIELDS = (
+    "mmsi", "latitude", "longitude",
+    "speed_over_ground", "course_over_ground", "heading",
+    "nav_status", "recorded_at",
+)
+
+
+def _to_track_record(r: dict) -> dict | None:
+    """Extract a VesselTrack row from a normalised vessel record.
+
+    Returns None when the record lacks a valid position or timestamp.
+    """
+    if r.get("latitude") is None or r.get("longitude") is None:
+        return None
+    recorded_at = r.get("position_timestamp")
+    if recorded_at is None:
+        return None
+    return {
+        "mmsi": r["mmsi"],
+        "latitude": r["latitude"],
+        "longitude": r["longitude"],
+        "speed_over_ground": r.get("speed_over_ground"),
+        "course_over_ground": r.get("course_over_ground"),
+        "heading": r.get("heading"),
+        "nav_status": r.get("nav_status"),
+        "recorded_at": recorded_at,
+    }
+
+
 async def _upsert_vessels(records: list[dict]) -> int:
     """
-    Upsert normalised vessel records into the database.
+    Upsert normalised vessel records and append track history in one transaction.
 
-    On MMSI conflict: update all position fields and identity fields that
-    are non-null in the incoming record. Physical dimensions (length, beam,
-    etc.) are excluded from the update set so manually-entered values are
-    never overwritten by the feed.
+    Vessel upsert: overwrites position/identity fields; never touches physical
+    dimensions set manually.
 
-    Returns the number of rows processed.
+    Track insert: ON CONFLICT (mmsi, recorded_at) DO NOTHING — re-polling the
+    same data is idempotent.
+
+    Returns the number of vessel records processed.
     """
     if not records:
         return 0
 
-    UPDATE_FIELDS = (
-        "imo", "name", "call_sign", "flag", "vessel_type",
-        "latitude", "longitude",
-        "speed_over_ground", "course_over_ground", "heading",
-        "nav_status", "position_timestamp",
-    )
+    track_records = [t for r in records if (t := _to_track_record(r))]
 
     async with AsyncSessionLocal() as session:
-        stmt = (
+        vessel_stmt = (
             insert(Vessel)
             .values(records)
             .on_conflict_do_update(
                 index_elements=["mmsi"],
-                set_={col: insert(Vessel).excluded[col] for col in UPDATE_FIELDS},
+                set_={col: insert(Vessel).excluded[col] for col in _VESSEL_UPDATE_FIELDS},
             )
         )
-        await session.execute(stmt)
+        await session.execute(vessel_stmt)
+
+        if track_records:
+            track_stmt = (
+                insert(VesselTrack)
+                .values(track_records)
+                .on_conflict_do_nothing(
+                    index_elements=["mmsi", "recorded_at"],
+                )
+            )
+            await session.execute(track_stmt)
+
         await session.commit()
 
+    logger.debug("Inserted %d track points", len(track_records))
     return len(records)
 
 

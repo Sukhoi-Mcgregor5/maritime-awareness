@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import DateTime, Enum, Float, Integer, String, func
+from sqlalchemy import DateTime, Enum, Float, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -64,4 +64,42 @@ class Vessel(Base):
     )
     updated_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class VesselTrack(Base):
+    """
+    Immutable time-series record of every position update received for a vessel.
+
+    Each row captures the state at a single AIS report timestamp.
+    Keyed on (mmsi, recorded_at) so duplicate poll cycles are idempotent.
+    mmsi is stored directly (no FK) to keep bulk inserts fast and to avoid
+    ordering constraints relative to the vessels upsert.
+    """
+
+    __tablename__ = "vessel_tracks"
+    __table_args__ = (
+        # Deduplicates re-polls of the same AIS message
+        UniqueConstraint("mmsi", "recorded_at", name="uq_vessel_tracks_mmsi_recorded_at"),
+        # Primary query pattern: track for vessel X in time range Y
+        Index("ix_vessel_tracks_mmsi_recorded_at", "mmsi", "recorded_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mmsi: Mapped[str] = mapped_column(String(9), nullable=False)
+
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    speed_over_ground: Mapped[float | None] = mapped_column(Float, nullable=True)
+    course_over_ground: Mapped[float | None] = mapped_column(Float, nullable=True)
+    heading: Mapped[float | None] = mapped_column(Float, nullable=True)
+    nav_status: Mapped[NavigationStatus] = mapped_column(
+        Enum(NavigationStatus), nullable=False, default=NavigationStatus.unknown
+    )
+
+    # Timestamp carried in the AIS message itself
+    recorded_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # When this row was written to the DB
+    ingested_at: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
