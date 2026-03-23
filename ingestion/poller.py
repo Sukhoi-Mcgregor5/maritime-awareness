@@ -62,6 +62,9 @@ async def _flush(positions: list[dict], statics: list[dict]) -> None:
         return
 
     track_records = [t for r in positions if (t := _to_track(r))]
+    skipped = len(positions) - len(track_records)
+    if skipped:
+        logger.debug("%d position records skipped for track (missing lat/lon or timestamp)", skipped)
 
     async with AsyncSessionLocal() as session:
         if positions:

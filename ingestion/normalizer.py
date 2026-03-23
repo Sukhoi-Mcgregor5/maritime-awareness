@@ -7,9 +7,12 @@ AISStream delivers two relevant message types:
   - ShipStaticData   (AIS msg 5):     name, call sign, IMO, type, dimensions
 """
 
+import logging
 from datetime import datetime, timezone
 
 from ontology.models import NavigationStatus, VesselType
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # AIS vessel type code → VesselType  (ITU-R M.1371-5, Table 53)
@@ -70,15 +73,28 @@ def _sentinel_to_none(value: float | int | None, sentinel: float) -> float | Non
 
 
 def _parse_timestamp(raw: str | None) -> datetime | None:
-    """Parse AISStream ISO 8601 timestamp to an aware UTC datetime."""
+    """
+    Parse AISStream's time_utc field to an aware UTC datetime.
+
+    AISStream sends time_utc in the format:
+        "2023-10-15 12:34:56.123456 +0000 UTC"
+    The trailing ' UTC' token is not valid ISO 8601, so fromisoformat()
+    fails silently. We strip it before parsing.
+    """
     if not raw:
         return None
+
+    # Strip the redundant trailing ' UTC' AISStream appends
+    cleaned = raw.removesuffix(" UTC").strip()
+
     try:
-        dt = datetime.fromisoformat(raw)
+        dt = datetime.fromisoformat(cleaned)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        logger.debug("Parsed timestamp %r → %s", raw, dt)
         return dt
     except ValueError:
+        logger.warning("Failed to parse timestamp %r (cleaned: %r)", raw, cleaned)
         return None
 
 
@@ -113,6 +129,11 @@ def normalize_position(msg: dict) -> dict | None:
     if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
         lat = lon = None
 
+    time_utc = meta.get("time_utc")
+    position_timestamp = _parse_timestamp(time_utc)
+    if position_timestamp is None:
+        logger.debug("MMSI %s: time_utc=%r → position_timestamp=None (track will be skipped)", mmsi, time_utc)
+
     return {
         "mmsi":               mmsi,
         "name":               (meta.get("ShipName") or "").strip() or None,
@@ -123,7 +144,7 @@ def normalize_position(msg: dict) -> dict | None:
         "course_over_ground": _sentinel_to_none(body.get("Cog"), 360.0),
         "heading":            _sentinel_to_none(body.get("TrueHeading"), 511),
         "nav_status":         _nav_status(body.get("NavigationalStatus")),
-        "position_timestamp": _parse_timestamp(meta.get("time_utc")),
+        "position_timestamp": position_timestamp,
     }
 
 
