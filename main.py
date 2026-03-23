@@ -7,10 +7,12 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from api.anomalies import router as anomalies_router
 from api.router import router
 from api.vessels import router as vessels_router
 from config import settings
 from database import Base, engine
+from detection.engine import run_detection_engine
 from ingestion.poller import run_poller
 
 logger = logging.getLogger(__name__)
@@ -21,15 +23,17 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    poller_task = asyncio.create_task(run_poller())
+    poller_task    = asyncio.create_task(run_poller())
+    detection_task = asyncio.create_task(run_detection_engine())
 
     yield
 
-    poller_task.cancel()
-    try:
-        await poller_task
-    except asyncio.CancelledError:
-        logger.info("AIS poller stopped")
+    for task, name in [(poller_task, "AIS poller"), (detection_task, "detection engine")]:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            logger.info("%s stopped", name)
 
     await engine.dispose()
 
@@ -43,6 +47,7 @@ app = FastAPI(
 
 app.include_router(router, prefix="/api/v1")
 app.include_router(vessels_router, prefix="/api/v1")
+app.include_router(anomalies_router, prefix="/api/v1")
 
 
 @app.get("/", include_in_schema=False)

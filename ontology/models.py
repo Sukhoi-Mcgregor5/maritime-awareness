@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import DateTime, Enum, Float, Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import DateTime, Enum, Float, Index, Integer, JSON, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -103,3 +103,41 @@ class VesselTrack(Base):
     ingested_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class AnomalyType(str, enum.Enum):
+    dark_vessel = "dark_vessel"
+    loitering   = "loitering"
+
+
+class AnomalyStatus(str, enum.Enum):
+    active   = "active"
+    resolved = "resolved"
+
+
+class Anomaly(Base):
+    """
+    A detected behavioural anomaly for a vessel.
+
+    Anomalies are opened when a detector first fires and resolved when the
+    condition clears on a subsequent detection run.  details stores
+    detector-specific context (e.g. silence duration, displacement).
+    """
+
+    __tablename__ = "anomalies"
+    __table_args__ = (
+        Index("ix_anomalies_mmsi_type_status", "mmsi", "anomaly_type", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mmsi: Mapped[str] = mapped_column(String(9), nullable=False, index=True)
+    anomaly_type: Mapped[AnomalyType] = mapped_column(Enum(AnomalyType), nullable=False)
+    status: Mapped[AnomalyStatus] = mapped_column(
+        Enum(AnomalyStatus), nullable=False, default=AnomalyStatus.active
+    )
+    detected_at: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    resolved_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Detector-specific context stored as JSON
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
