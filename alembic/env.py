@@ -25,6 +25,25 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 
 target_metadata = Base.metadata
 
+# Tables owned by PostGIS / Tiger geocoder extensions — never touch these
+_EXCLUDED_TABLES = {
+    "spatial_ref_sys", "topology", "layer",
+    "state", "county", "cousub", "place", "tract", "bg", "tabblock", "tabblock20",
+    "edges", "addrfeat", "faces", "featnames", "addr", "zcta5",
+    "pagc_lex", "pagc_gaz", "pagc_rules",
+    "loader_lookuptables", "loader_platform", "loader_variables",
+    "geocode_settings", "geocode_settings_default",
+    "direction_lookup", "street_type_lookup", "secondary_unit_lookup",
+    "place_lookup", "county_lookup", "countysub_lookup", "state_lookup",
+    "zip_lookup", "zip_lookup_all", "zip_lookup_base", "zip_state", "zip_state_loc",
+}
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    if type_ == "table" and name in _EXCLUDED_TABLES:
+        return False
+    return True
+
 
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
@@ -33,13 +52,14 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(connection=connection, target_metadata=target_metadata, include_object=include_object)
     with context.begin_transaction():
         context.run_migrations()
 
