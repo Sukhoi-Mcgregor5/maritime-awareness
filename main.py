@@ -4,6 +4,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from api.router import router
+from api.vessels import router as vessels_router
 from config import settings
 from database import Base, engine
 
@@ -24,6 +25,7 @@ app = FastAPI(
 )
 
 app.include_router(router, prefix="/api/v1")
+app.include_router(vessels_router, prefix="/api/v1")
 
 
 if __name__ == "__main__":
