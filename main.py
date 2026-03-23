@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.router import router
 from api.vessels import router as vessels_router
@@ -41,6 +43,14 @@ app = FastAPI(
 
 app.include_router(router, prefix="/api/v1")
 app.include_router(vessels_router, prefix="/api/v1")
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    return RedirectResponse(url="/static/index.html")
+
+
+app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
 
 if __name__ == "__main__":

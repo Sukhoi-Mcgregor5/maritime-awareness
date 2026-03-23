@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Maritime Domain Awareness</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body { font-family: system-ui, sans-serif; background: #0d1b2a; color: #e0e6f0; height: 100vh; display: flex; flex-direction: column; }
+
+    /* ── Header ── */
+    header {
+      display: flex; align-items: center; gap: 16px;
+      padding: 10px 16px;
+      background: #0d1b2a;
+      border-bottom: 1px solid #1e3a5f;
+      flex-shrink: 0;
+      z-index: 1000;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.04em; color: #7eb8f7; white-space: nowrap; }
+    .badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 10px; background: #1e3a5f; color: #a0c4f1; }
+    .status { font-size: 0.75rem; color: #6b8cae; margin-left: auto; }
+    .status span { color: #7eb8f7; }
+
+    /* ── Layout ── */
+    .main { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ── */
+    aside {
+      width: 260px; flex-shrink: 0;
+      background: #0f2236;
+      border-right: 1px solid #1e3a5f;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar-header { padding: 10px 12px; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; color: #4a7aaa; border-bottom: 1px solid #1e3a5f; }
+    .vessel-list { overflow-y: auto; flex: 1; }
+    .vessel-item {
+      padding: 8px 12px; border-bottom: 1px solid #162d47; cursor: pointer;
+      display: flex; gap: 8px; align-items: center;
+      transition: background 0.1s;
+    }
+    .vessel-item:hover { background: #1a3550; }
+    .vessel-item.selected { background: #1e3a5f; }
+    .vessel-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .vessel-info { overflow: hidden; }
+    .vessel-name { font-size: 0.8rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .vessel-sub { font-size: 0.7rem; color: #6b8cae; }
+
+    /* ── Legend ── */
+    .legend { padding: 10px 12px; border-top: 1px solid #1e3a5f; font-size: 0.7rem; }
+    .legend-title { color: #4a7aaa; letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 6px; }
+    .legend-item { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; color: #8aaac8; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+    /* ── Map ── */
+    #map { flex: 1; }
+
+    /* ── Vessel marker ── */
+    .vessel-marker { display: flex; align-items: center; justify-content: center; }
+    .vessel-arrow {
+      width: 0; height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-bottom: 14px solid currentColor;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+    }
+
+    /* ── Popup ── */
+    .leaflet-popup-content-wrapper {
+      background: #0f2236; color: #e0e6f0;
+      border: 1px solid #1e3a5f; border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    }
+    .leaflet-popup-tip { background: #0f2236; }
+    .leaflet-popup-content { margin: 12px 14px; min-width: 200px; }
+    .popup-name { font-weight: 600; font-size: 0.9rem; margin-bottom: 8px; color: #7eb8f7; }
+    .popup-row { display: flex; justify-content: space-between; font-size: 0.75rem; margin-bottom: 4px; }
+    .popup-label { color: #6b8cae; }
+    .popup-val { color: #c8ddf0; font-weight: 500; }
+    .popup-track-btn {
+      margin-top: 10px; width: 100%;
+      padding: 5px 0; border: 1px solid #1e6fd4; border-radius: 4px;
+      background: transparent; color: #7eb8f7; font-size: 0.75rem; cursor: pointer;
+      transition: background 0.15s;
+    }
+    .popup-track-btn:hover { background: #1e3a5f; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #0f2236; }
+    ::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 2px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⚓ Maritime Domain Awareness</h1>
+  <span class="badge" id="vessel-count">— vessels</span>
+  <span class="status">Updated <span id="last-updated">—</span></span>
+</header>
+
+<div class="main">
+  <aside>
+    <div class="sidebar-header">Vessels</div>
+    <div class="vessel-list" id="vessel-list"></div>
+    <div class="legend">
+      <div class="legend-title">Vessel type</div>
+      <!-- populated by JS -->
+      <div id="legend-items"></div>
+    </div>
+  </aside>
+  <div id="map"></div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+const REFRESH_MS   = 30_000;   // re-fetch vessel positions every 30 s
+const API_BASE     = '/api/v1';
+const MAX_VESSELS  = 200;      // max from list endpoint
+
+// ---------------------------------------------------------------------------
+// Vessel type colours (must match VesselType enum)
+// ---------------------------------------------------------------------------
+const TYPE_COLOUR = {
+  cargo:      '#4a90d9',
+  tanker:     '#e74c3c',
+  passenger:  '#2ecc71',
+  fishing:    '#f39c12',
+  tug:        '#9b59b6',
+  military:   '#e84393',
+  pleasure:   '#1abc9c',
+  other:      '#95a5a6',
+  unknown:    '#4a6080',
+};
+
+// ---------------------------------------------------------------------------
+// Map setup
+// ---------------------------------------------------------------------------
+const map = L.map('map', { center: [20, 0], zoom: 3, zoomControl: true });
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+  subdomains: 'abcd',
+  maxZoom: 19,
+}).addTo(map);
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let markers   = {};   // mmsi → L.Marker
+let vessels   = [];   // current vessel list
+let selected  = null; // selected mmsi
+
+// ---------------------------------------------------------------------------
+// Marker helpers
+// ---------------------------------------------------------------------------
+function vesselIcon(vessel) {
+  const colour  = TYPE_COLOUR[vessel.vessel_type] ?? TYPE_COLOUR.unknown;
+  const heading = vessel.heading ?? vessel.course_over_ground ?? 0;
+  return L.divIcon({
+    className: 'vessel-marker',
+    html: `<div class="vessel-arrow" style="color:${colour};transform:rotate(${heading}deg)"></div>`,
+    iconSize:   [10, 14],
+    iconAnchor: [5, 7],
+  });
+}
+
+function popupHtml(v) {
+  const sog  = v.speed_over_ground != null ? `${v.speed_over_ground.toFixed(1)} kn` : '—';
+  const cog  = v.course_over_ground != null ? `${v.course_over_ground.toFixed(0)}°` : '—';
+  const hdg  = v.heading != null ? `${v.heading.toFixed(0)}°` : '—';
+  const pos  = (v.latitude != null && v.longitude != null)
+    ? `${v.latitude.toFixed(4)}, ${v.longitude.toFixed(4)}`
+    : '—';
+  const ts   = v.position_timestamp ? new Date(v.position_timestamp).toUTCString() : '—';
+
+  return `
+    <div class="popup-name">${v.name || 'Unknown vessel'}</div>
+    <div class="popup-row"><span class="popup-label">MMSI</span><span class="popup-val">${v.mmsi}</span></div>
+    ${v.imo ? `<div class="popup-row"><span class="popup-label">IMO</span><span class="popup-val">${v.imo}</span></div>` : ''}
+    ${v.call_sign ? `<div class="popup-row"><span class="popup-label">Call sign</span><span class="popup-val">${v.call_sign}</span></div>` : ''}
+    <div class="popup-row"><span class="popup-label">Type</span><span class="popup-val">${v.vessel_type}</span></div>
+    <div class="popup-row"><span class="popup-label">Flag</span><span class="popup-val">${v.flag || '—'}</span></div>
+    <div class="popup-row"><span class="popup-label">Nav status</span><span class="popup-val">${(v.nav_status || '').replace(/_/g, ' ')}</span></div>
+    <div class="popup-row"><span class="popup-label">Position</span><span class="popup-val">${pos}</span></div>
+    <div class="popup-row"><span class="popup-label">SOG / COG</span><span class="popup-val">${sog} / ${cog}</span></div>
+    <div class="popup-row"><span class="popup-label">Heading</span><span class="popup-val">${hdg}</span></div>
+    <div class="popup-row"><span class="popup-label">Reported</span><span class="popup-val">${ts}</span></div>
+    <button class="popup-track-btn" onclick="fetchTrack('${v.mmsi}')">View track history</button>
+  `;
+}
+
+// ---------------------------------------------------------------------------
+// Track overlay
+// ---------------------------------------------------------------------------
+let trackLayer = null;
+
+async function fetchTrack(mmsi) {
+  if (trackLayer) { map.removeLayer(trackLayer); trackLayer = null; }
+
+  const until = new Date().toISOString();
+  const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString(); // last 24 h
+  const url   = `${API_BASE}/vessels/${mmsi}/track?since=${since}&until=${until}&limit=5000`;
+
+  try {
+    const res  = await fetch(url);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.points?.length) return;
+
+    const latlngs = data.points
+      .filter(p => p.latitude != null && p.longitude != null)
+      .map(p => [p.latitude, p.longitude]);
+
+    if (!latlngs.length) return;
+
+    trackLayer = L.layerGroup([
+      L.polyline(latlngs, { color: '#7eb8f7', weight: 1.5, opacity: 0.7 }),
+      ...data.points
+        .filter(p => p.latitude != null)
+        .map(p => L.circleMarker([p.latitude, p.longitude], {
+          radius: 2, color: '#7eb8f7', fillOpacity: 0.6, weight: 0,
+        })),
+    ]).addTo(map);
+
+    map.fitBounds(L.polyline(latlngs).getBounds(), { padding: [40, 40] });
+  } catch (err) {
+    console.error('Track fetch error:', err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar
+// ---------------------------------------------------------------------------
+function renderSidebar(vesselList) {
+  const el = document.getElementById('vessel-list');
+  el.innerHTML = '';
+  vesselList
+    .slice()
+    .sort((a, b) => (a.name || a.mmsi).localeCompare(b.name || b.mmsi))
+    .forEach(v => {
+      const colour = TYPE_COLOUR[v.vessel_type] ?? TYPE_COLOUR.unknown;
+      const item   = document.createElement('div');
+      item.className = 'vessel-item' + (v.mmsi === selected ? ' selected' : '');
+      item.dataset.mmsi = v.mmsi;
+      item.innerHTML = `
+        <div class="vessel-dot" style="background:${colour}"></div>
+        <div class="vessel-info">
+          <div class="vessel-name">${v.name || v.mmsi}</div>
+          <div class="vessel-sub">${v.vessel_type} · ${v.mmsi}</div>
+        </div>`;
+      item.addEventListener('click', () => {
+        selected = v.mmsi;
+        renderSidebar(vessels);
+        const m = markers[v.mmsi];
+        if (m) { map.setView(m.getLatLng(), Math.max(map.getZoom(), 8)); m.openPopup(); }
+      });
+      el.appendChild(item);
+    });
+}
+
+function renderLegend() {
+  const el = document.getElementById('legend-items');
+  el.innerHTML = Object.entries(TYPE_COLOUR).map(([type, colour]) => `
+    <div class="legend-item">
+      <div class="legend-dot" style="background:${colour}"></div>
+      <span>${type}</span>
+    </div>`).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Fetch & render vessels
+// ---------------------------------------------------------------------------
+async function loadVessels() {
+  try {
+    const res  = await fetch(`${API_BASE}/vessels?limit=${MAX_VESSELS}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    vessels    = data.items ?? [];
+
+    const seen = new Set();
+
+    for (const v of vessels) {
+      if (v.latitude == null || v.longitude == null) continue;
+      seen.add(v.mmsi);
+
+      const latlng = [v.latitude, v.longitude];
+
+      if (markers[v.mmsi]) {
+        markers[v.mmsi].setLatLng(latlng).setIcon(vesselIcon(v));
+        markers[v.mmsi]._popup.setContent(popupHtml(v));
+      } else {
+        markers[v.mmsi] = L.marker(latlng, { icon: vesselIcon(v) })
+          .bindPopup(popupHtml(v), { maxWidth: 260 })
+          .addTo(map);
+
+        markers[v.mmsi].on('click', () => {
+          selected = v.mmsi;
+          renderSidebar(vessels);
+        });
+      }
+    }
+
+    // Remove markers for vessels no longer in the list
+    for (const mmsi of Object.keys(markers)) {
+      if (!seen.has(mmsi)) { map.removeLayer(markers[mmsi]); delete markers[mmsi]; }
+    }
+
+    document.getElementById('vessel-count').textContent =
+      `${vessels.filter(v => v.latitude != null).length} vessels`;
+    document.getElementById('last-updated').textContent =
+      new Date().toLocaleTimeString();
+
+    renderSidebar(vessels);
+  } catch (err) {
+    console.error('Failed to load vessels:', err);
+    document.getElementById('last-updated').textContent = 'error';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+renderLegend();
+loadVessels();
+setInterval(loadVessels, REFRESH_MS);
+</script>
+</body>
+</html>
