@@ -11,8 +11,8 @@ from config import settings
 from database import Base
 
 # Import all models here so Alembic's autogenerate can detect them
+from ontology.models import *  # noqa: F401
 # from ingestion.models import *  # noqa: F401
-# from ontology.models import *   # noqa: F401
 # from detection.models import *  # noqa: F401
 
 config = context.config
