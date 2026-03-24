@@ -81,18 +81,20 @@ async def _run_once() -> None:
         dark = await detect_dark_vessels(
             session,
             silence_minutes=settings.dark_vessel_silence_minutes,
-            lookback_hours=settings.dark_vessel_lookback_hours,
+            active_window_hours=settings.dark_vessel_active_window_hours,
+            min_active_points=settings.dark_vessel_min_active_points,
         )
         await _reconcile(session, dark, AnomalyType.dark_vessel)
 
-        loitering = await detect_loitering(
-            session,
-            window_hours=settings.loitering_window_hours,
-            min_duration_minutes=settings.loitering_min_duration_minutes,
-            max_displacement_nm=settings.loitering_max_displacement_nm,
-            max_avg_sog=settings.loitering_max_avg_sog,
-        )
-        await _reconcile(session, loitering, AnomalyType.loitering)
+        # loitering = await detect_loitering(
+        #     session,
+        #     window_hours=settings.loitering_window_hours,
+        #     min_duration_minutes=settings.loitering_min_duration_minutes,
+        #     max_displacement_nm=settings.loitering_max_displacement_nm,
+        #     max_avg_sog=settings.loitering_max_avg_sog,
+        # )
+        # await _reconcile(session, loitering, AnomalyType.loitering)
+        loitering = []
 
         await session.commit()
 

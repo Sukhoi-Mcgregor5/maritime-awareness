@@ -109,7 +109,7 @@ Db = Annotated[AsyncSession, Depends(get_db)]
 @router.get("", response_model=VesselPage)
 async def list_vessels(
     db: Db,
-    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 2000,
     offset: Annotated[int, Query(ge=0)] = 0,
     vessel_type: VesselType | None = None,
     flag: str | None = None,
@@ -124,6 +124,30 @@ async def list_vessels(
     rows = (await db.execute(query.order_by(Vessel.id).offset(offset).limit(limit))).scalars().all()
 
     return VesselPage(total=total, limit=limit, offset=offset, items=rows)
+
+
+@router.get("/bounds", response_model=VesselPage)
+async def vessels_in_bounds(
+    db: Db,
+    south: Annotated[float, Query(ge=-90,  le=90,  description="Southern latitude bound")],
+    west:  Annotated[float, Query(ge=-180, le=180, description="Western longitude bound")],
+    north: Annotated[float, Query(ge=-90,  le=90,  description="Northern latitude bound")],
+    east:  Annotated[float, Query(ge=-180, le=180, description="Eastern longitude bound")],
+    limit: Annotated[int,   Query(ge=1,    le=2000)] = 2000,
+):
+    """Return vessels whose last known position falls within the given bounding box."""
+    query = (
+        select(Vessel)
+        .where(Vessel.latitude.isnot(None))
+        .where(Vessel.longitude.isnot(None))
+        .where(Vessel.latitude  >= south)
+        .where(Vessel.latitude  <= north)
+        .where(Vessel.longitude >= west)
+        .where(Vessel.longitude <= east)
+    )
+    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
+    rows  = (await db.execute(query.order_by(Vessel.id).limit(limit))).scalars().all()
+    return VesselPage(total=total, limit=limit, offset=0, items=rows)
 
 
 @router.get("/{mmsi}", response_model=VesselResponse)

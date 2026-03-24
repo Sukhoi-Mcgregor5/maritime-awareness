@@ -61,6 +61,14 @@ async def _flush(positions: list[dict], statics: list[dict]) -> None:
     if not positions and not statics:
         return
 
+    # Keep only the latest position per MMSI within the batch
+    seen: dict[str, dict] = {}
+    for r in positions:
+        mmsi = r["mmsi"]
+        if mmsi not in seen or r.get("position_timestamp", "") > seen[mmsi].get("position_timestamp", ""):
+            seen[mmsi] = r
+    positions = list(seen.values())
+
     track_records = [t for r in positions if (t := _to_track(r))]
     skipped = len(positions) - len(track_records)
     if skipped:

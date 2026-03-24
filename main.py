@@ -6,9 +6,12 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from api.anomalies import router as anomalies_router
+from api.investigate import router as investigate_router
 from api.router import router
+from api.sanctions import router as sanctions_router
 from api.vessels import router as vessels_router
 from config import settings
 from database import Base, engine
@@ -48,6 +51,13 @@ app = FastAPI(
 app.include_router(router, prefix="/api/v1")
 app.include_router(vessels_router, prefix="/api/v1")
 app.include_router(anomalies_router, prefix="/api/v1")
+app.include_router(investigate_router, prefix="/api/v1")
+app.include_router(sanctions_router, prefix="/api/v1")
+
+
+@app.get("/api/v1/health", tags=["health"])
+async def health():
+    return {"status": "ok"}
 
 
 @app.get("/", include_in_schema=False)
@@ -58,6 +68,16 @@ async def root():
 @app.get("/map", include_in_schema=False)
 async def map_view():
     return RedirectResponse(url="/static/map.html")
+
+
+@app.get("/chat", include_in_schema=False)
+async def chat_view():
+    return RedirectResponse(url="/static/chat.html")
+
+
+@app.get("/chat", include_in_schema=False)
+async def chat_page():
+    return FileResponse("frontend/chat.html")
 
 
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")

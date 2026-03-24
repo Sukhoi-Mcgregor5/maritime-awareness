@@ -1,5 +1,6 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
+gunicorn==22.0.0
 sqlalchemy==2.0.35
 asyncpg==0.29.0
 alembic==1.13.3
@@ -14,3 +15,4 @@ shapely==2.0.6
 pyproj==3.6.1
 numpy==2.1.1
 pandas==2.2.3
+mistralai>=1.0.0

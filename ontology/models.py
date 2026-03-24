@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import DateTime, Enum, Float, Index, Integer, JSON, String, UniqueConstraint, func
+from sqlalchemy import DateTime, Enum, Float, Index, Integer, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -103,6 +103,41 @@ class VesselTrack(Base):
     ingested_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class EntityType(str, enum.Enum):
+    vessel   = "vessel"
+    company  = "company"
+    person   = "person"
+    aircraft = "aircraft"
+    other    = "other"
+
+
+class SanctionedEntity(Base):
+    """
+    An entity (vessel, company, or person) appearing on a sanctions list.
+
+    Populated by ingestion/sanctions.py from OFAC SDN and consolidated lists.
+    Indexed so vessel-matching queries (MMSI, IMO, name) are fast.
+    """
+
+    __tablename__ = "sanctioned_entities"
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="uq_sanctioned_source_id"),
+        Index("ix_sanctioned_entities_name", "name"),
+        Index("ix_sanctioned_entities_type", "entity_type"),
+    )
+
+    id:          Mapped[int]           = mapped_column(Integer, primary_key=True)
+    source_id:   Mapped[str]           = mapped_column(String(50),  nullable=False)
+    name:        Mapped[str]           = mapped_column(String(500), nullable=False)
+    entity_type: Mapped[EntityType]    = mapped_column(Enum(EntityType), nullable=False, default=EntityType.other)
+    # Structured vessel identifiers: {mmsi, imo, call_sign}
+    identifiers: Mapped[dict | None]   = mapped_column(JSON,        nullable=True)
+    source:      Mapped[str]           = mapped_column(String(20),  nullable=False)   # OFAC_SDN, OFAC_CONS
+    country:     Mapped[str | None]    = mapped_column(String(100), nullable=True)
+    programs:    Mapped[str | None]    = mapped_column(String(500), nullable=True)
+    remarks:     Mapped[str | None]    = mapped_column(Text,        nullable=True)
 
 
 class AnomalyType(str, enum.Enum):
