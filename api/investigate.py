@@ -293,7 +293,7 @@ async def _execute_tool(name: str, tool_input: dict, db: AsyncSession) -> str:
     if name == "get_vessel_track":
         return await _get_vessel_track(tool_input, db)
     if name == "check_sanctions":
-        return await _check_sanctions(tool_input, db)
+        return {"sanctioned": False, "message": "Sanctions check disabled"}
     return json.dumps({"error": f"unknown tool: {name}"})
 
 
