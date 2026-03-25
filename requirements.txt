@@ -16,3 +16,4 @@ pyproj
 numpy
 pandas
 mistralai
+anthropic

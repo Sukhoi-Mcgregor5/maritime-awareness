@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from mistralai import Mistral
+import anthropic
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -39,124 +39,111 @@ After gathering all necessary data, respond with a JSON object containing exactl
 
 Respond ONLY with the JSON object — no markdown fences, no extra text."""
 
-# Mistral uses OpenAI-compatible function-calling format
 _TOOLS = [
     {
-        "type": "function",
-        "function": {
-            "name": "search_vessels",
-            "description": (
-                "Search vessels in the database by type, flag, name, MMSI, navigation status, "
-                "or speed range. Returns current position and metadata for matching vessels."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "vessel_type": {
-                        "type": "string",
-                        "enum": ["cargo", "tanker", "passenger", "fishing", "tug", "military", "pleasure", "other", "unknown"],
-                        "description": "Filter by vessel type",
-                    },
-                    "flag": {
-                        "type": "string",
-                        "description": "ISO 3166-1 alpha-3 flag state (e.g. 'GBR', 'USA', 'PRK')",
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Partial vessel name match (case-insensitive)",
-                    },
-                    "mmsi": {
-                        "type": "string",
-                        "description": "Exact 9-digit MMSI",
-                    },
-                    "nav_status": {
-                        "type": "string",
-                        "enum": ["under_way_engine", "at_anchor", "not_under_command", "restricted_maneuverability", "moored", "aground", "unknown"],
-                        "description": "Filter by navigation status",
-                    },
-                    "min_sog": {"type": "number", "description": "Minimum speed over ground (knots)"},
-                    "max_sog": {"type": "number", "description": "Maximum speed over ground (knots)"},
-                    "limit": {"type": "integer", "description": "Max results (default 20, max 100)"},
+        "name": "search_vessels",
+        "description": (
+            "Search vessels in the database by type, flag, name, MMSI, navigation status, "
+            "or speed range. Returns current position and metadata for matching vessels."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vessel_type": {
+                    "type": "string",
+                    "enum": ["cargo", "tanker", "passenger", "fishing", "tug", "military", "pleasure", "other", "unknown"],
+                    "description": "Filter by vessel type",
                 },
-                "required": [],
+                "flag": {
+                    "type": "string",
+                    "description": "ISO 3166-1 alpha-3 flag state (e.g. 'GBR', 'USA', 'PRK')",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Partial vessel name match (case-insensitive)",
+                },
+                "mmsi": {
+                    "type": "string",
+                    "description": "Exact 9-digit MMSI",
+                },
+                "nav_status": {
+                    "type": "string",
+                    "enum": ["under_way_engine", "at_anchor", "not_under_command", "restricted_maneuverability", "moored", "aground", "unknown"],
+                    "description": "Filter by navigation status",
+                },
+                "min_sog": {"type": "number", "description": "Minimum speed over ground (knots)"},
+                "max_sog": {"type": "number", "description": "Maximum speed over ground (knots)"},
+                "limit": {"type": "integer", "description": "Max results (default 20, max 100)"},
             },
+            "required": [],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "get_anomalies",
-            "description": (
-                "Retrieve detected behavioural anomalies. "
-                "'dark_vessel' = AIS signal went silent unexpectedly. "
-                "'loitering' = vessel circling or drifting slowly in an area. "
-                "Default status is 'active'."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "anomaly_type": {
-                        "type": "string",
-                        "enum": ["dark_vessel", "loitering"],
-                        "description": "Filter by anomaly type",
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["active", "resolved"],
-                        "description": "Anomaly status (default: active)",
-                    },
-                    "mmsi": {"type": "string", "description": "Filter to a specific vessel MMSI"},
-                    "since_hours": {
-                        "type": "number",
-                        "description": "Only anomalies detected in the last N hours (default: 24)",
-                    },
-                    "limit": {"type": "integer", "description": "Max results (default 50, max 200)"},
+        "name": "get_anomalies",
+        "description": (
+            "Retrieve detected behavioural anomalies. "
+            "'dark_vessel' = AIS signal went silent unexpectedly. "
+            "'loitering' = vessel circling or drifting slowly in an area. "
+            "Default status is 'active'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "anomaly_type": {
+                    "type": "string",
+                    "enum": ["dark_vessel", "loitering"],
+                    "description": "Filter by anomaly type",
                 },
-                "required": [],
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "resolved"],
+                    "description": "Anomaly status (default: active)",
+                },
+                "mmsi": {"type": "string", "description": "Filter to a specific vessel MMSI"},
+                "since_hours": {
+                    "type": "number",
+                    "description": "Only anomalies detected in the last N hours (default: 24)",
+                },
+                "limit": {"type": "integer", "description": "Max results (default 50, max 200)"},
             },
+            "required": [],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "get_vessel_track",
-            "description": (
-                "Get historical position track for a specific vessel. "
-                "Useful for understanding movement patterns, routes, and dwell times."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "mmsi": {"type": "string", "description": "9-digit MMSI of the vessel"},
-                    "hours": {
-                        "type": "number",
-                        "description": "Hours of history to retrieve (default: 24)",
-                    },
-                    "limit": {"type": "integer", "description": "Max track points (default 200, max 1000)"},
+        "name": "get_vessel_track",
+        "description": (
+            "Get historical position track for a specific vessel. "
+            "Useful for understanding movement patterns, routes, and dwell times."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mmsi": {"type": "string", "description": "9-digit MMSI of the vessel"},
+                "hours": {
+                    "type": "number",
+                    "description": "Hours of history to retrieve (default: 24)",
                 },
-                "required": ["mmsi"],
+                "limit": {"type": "integer", "description": "Max track points (default 200, max 1000)"},
             },
+            "required": ["mmsi"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "check_sanctions",
-            "description": (
-                "Check a vessel or entity against OFAC sanctions lists. "
-                "Returns exact MMSI/IMO matches, fuzzy name matches, and a flag-state risk assessment. "
-                "Use this to identify potential sanctions evasion or vessels linked to sanctioned entities."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "mmsi": {"type": "string", "description": "9-digit MMSI to check"},
-                    "imo":  {"type": "string", "description": "7-digit IMO number to check"},
-                    "name": {"type": "string", "description": "Vessel or entity name to fuzzy-match"},
-                    "flag": {"type": "string", "description": "ISO 3166-1 alpha-3 flag state (e.g. 'IRN', 'PRK')"},
-                },
-                "required": [],
+        "name": "check_sanctions",
+        "description": (
+            "Check a vessel or entity against OFAC sanctions lists. "
+            "Returns exact MMSI/IMO matches, fuzzy name matches, and a flag-state risk assessment. "
+            "Use this to identify potential sanctions evasion or vessels linked to sanctioned entities."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mmsi": {"type": "string", "description": "9-digit MMSI to check"},
+                "imo":  {"type": "string", "description": "7-digit IMO number to check"},
+                "name": {"type": "string", "description": "Vessel or entity name to fuzzy-match"},
+                "flag": {"type": "string", "description": "ISO 3166-1 alpha-3 flag state (e.g. 'IRN', 'PRK')"},
             },
+            "required": [],
         },
     },
 ]
@@ -336,41 +323,46 @@ class InvestigateResponse(BaseModel):
 async def investigate(payload: InvestigateRequest, db: Db):
     """
     Accept a natural language maritime intelligence query, run an agentic loop
-    against the vessel/anomaly database using Mistral, and return a structured brief.
+    against the vessel/anomaly database using Claude, and return a structured brief.
     """
-    client = Mistral(api_key=settings.mistral_api_key)
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     messages: list[dict] = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": payload.query},
     ]
 
     response = None
     while True:
-        response = await client.chat.complete_async(
-            model="mistral-small-latest",
-            messages=messages,
+        response = await client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=4096,
+            system=_SYSTEM_PROMPT,
             tools=_TOOLS,
-            tool_choice="auto",
+            messages=messages,
         )
 
-        choice = response.choices[0]
-        if choice.finish_reason != "tool_calls":
+        if response.stop_reason != "tool_use":
             break
 
-        # Append the assistant turn with its tool_calls
-        messages.append(choice.message)
+        # Append the assistant turn
+        messages.append({"role": "assistant", "content": response.content})
 
         # Execute every requested tool and append results
-        for tool_call in choice.message.tool_calls:
-            tool_input = json.loads(tool_call.function.arguments)
-            result = await _execute_tool(tool_call.function.name, tool_input, db)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result,
-            })
+        tool_results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                result = await _execute_tool(block.name, block.input, db)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+        messages.append({"role": "user", "content": tool_results})
 
-    raw_brief = response.choices[0].message.content or ""
+    raw_brief = ""
+    for block in response.content:
+        if hasattr(block, "text"):
+            raw_brief = block.text
+            break
 
     # Parse the JSON brief the model was instructed to produce
     summary = ""

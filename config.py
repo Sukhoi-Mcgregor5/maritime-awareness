@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     debug: bool = False
     sql_echo: bool = False
 
-    # Mistral AI
-    mistral_api_key: str = ""
+    # Anthropic
+    anthropic_api_key: str = ""
 
     # AISStream — register free at https://aisstream.io
     aisstream_api_key: str = ""
