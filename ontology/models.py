@@ -33,7 +33,7 @@ class Vessel(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     mmsi: Mapped[str] = mapped_column(String(9), unique=True, nullable=False, index=True)
-    imo: Mapped[str | None] = mapped_column(String(10), unique=True, nullable=True)
+    imo: Mapped[str | None] = mapped_column(String(10), nullable=True)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     call_sign: Mapped[str | None] = mapped_column(String(10), nullable=True)
     flag: Mapped[str | None] = mapped_column(String(3), nullable=True)  # ISO 3166-1 alpha-3
