@@ -354,7 +354,7 @@ async def investigate(payload: InvestigateRequest, db: Db):
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": result,
+                    "content": result if isinstance(result, str) else json.dumps(result),
                 })
         messages.append({"role": "user", "content": tool_results})
 
