@@ -27,17 +27,8 @@ Db = Annotated[AsyncSession, Depends(get_db)]
 
 _SYSTEM_PROMPT = """\
 You are a maritime intelligence analyst with access to a vessel tracking database.
-Answer the operator's natural language query by calling the available tools to gather data,
-then produce a structured intelligence brief.
-
-After gathering all necessary data, respond with a JSON object containing exactly these keys:
-- "summary": 1-2 sentence executive summary
-- "findings": list of strings, each a key finding with supporting evidence
-- "vessels_of_interest": list of MMSI strings relevant to the query
-- "recommendations": list of suggested follow-up actions
-- "confidence": "high", "medium", or "low" based on data completeness
-
-Respond ONLY with the JSON object — no markdown fences, no extra text."""
+Answer questions about vessels, their movements, and anomalies using the available tools.
+Respond in clear, natural language with your findings and assessments."""
 
 _TOOLS = [
     {
@@ -307,12 +298,7 @@ class InvestigateRequest(BaseModel):
 
 class InvestigateResponse(BaseModel):
     query: str
-    summary: str
-    findings: list[str]
-    vessels_of_interest: list[str]
-    recommendations: list[str]
-    confidence: str
-    raw_brief: str
+    response: str
 
 
 # ---------------------------------------------------------------------------
@@ -358,35 +344,13 @@ async def investigate(payload: InvestigateRequest, db: Db):
                 })
         messages.append({"role": "user", "content": tool_results})
 
-    raw_brief = ""
+    raw_text = ""
     for block in response.content:
         if hasattr(block, "text"):
-            raw_brief = block.text
+            raw_text = block.text
             break
-
-    # Parse the JSON brief the model was instructed to produce
-    summary = ""
-    findings: list[str] = []
-    vessels_of_interest: list[str] = []
-    recommendations: list[str] = []
-    confidence = "medium"
-
-    try:
-        parsed = json.loads(raw_brief)
-        summary = parsed.get("summary", "")
-        findings = parsed.get("findings", [])
-        vessels_of_interest = [str(m) for m in parsed.get("vessels_of_interest", [])]
-        recommendations = parsed.get("recommendations", [])
-        confidence = parsed.get("confidence", "medium")
-    except (json.JSONDecodeError, TypeError):
-        summary = raw_brief[:500] if raw_brief else "No brief generated."
 
     return InvestigateResponse(
         query=payload.query,
-        summary=summary,
-        findings=findings,
-        vessels_of_interest=vessels_of_interest,
-        recommendations=recommendations,
-        confidence=confidence,
-        raw_brief=raw_brief,
+        response=raw_text,
     )
