@@ -905,24 +905,12 @@ function appendSpinner() {
 }
 
 function appendBriefBubble(data) {
-  const conf = (data.confidence || 'medium').toLowerCase();
-
-  const findings = (data.findings || []).map(f => `<li>${esc(f)}</li>`).join('');
-  const recs     = (data.recommendations || []).map(r => `<li>${esc(r)}</li>`).join('');
-  const chips    = (data.vessels_of_interest || []).map(m =>
-    `<span class="mmsi-chip" onclick="highlightVessel('${m}')" title="Highlight on map">${esc(m)}</span>`
-  ).join('');
-
   const row = el('div', 'bubble-row assistant');
   row.innerHTML = `
     <div class="avatar">M</div>
     <div class="bubble">
       <div class="brief">
         <div class="brief-summary">${esc(data.response || '—')}</div>
-        ${findings ? `<div class="brief-section"><h4>Findings</h4><ul>${findings}</ul></div>` : ''}
-        ${recs     ? `<div class="brief-section"><h4>Recommendations</h4><ul>${recs}</ul></div>` : ''}
-        ${chips    ? `<div class="brief-section"><h4>Vessels of Interest</h4><div class="vessels-chips">${chips}</div></div>` : ''}
-        <span class="conf-badge ${conf}">${conf} confidence</span>
       </div>
     </div>`;
   chatFeed().appendChild(row);
