@@ -16,3 +16,4 @@ pyproj==3.6.1
 numpy==2.1.1
 pandas==2.2.3
 mistralai>=1.0.0
+mistralai==1.2.5
