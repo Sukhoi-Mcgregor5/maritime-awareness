@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from mistralai.client import Mistral
+from mistralai import Mistral
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
